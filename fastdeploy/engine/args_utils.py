@@ -125,6 +125,13 @@ class EngineArgs:
     Convert the model using adapters. The most common use case is to
     adapt a text generation model to be used for pooling tasks.
     """
+    model_impl: str = "auto"
+    """
+    The model implementation backend to use. Options: auto, fastdeploy, paddleformers.
+    'auto': Use native FastDeploy implementation when available, fallback to PaddleFormers.
+    'fastdeploy': Use only native FastDeploy implementations.
+    'paddleformers': Use PaddleFormers backend with FastDeploy optimizations.
+    """
     override_pooler_config: Optional[Union[dict, PoolerConfig]] = None
     """
     Override configuration for the pooler.
@@ -756,6 +763,18 @@ class EngineArgs:
             nargs="+",
             default=EngineArgs.logits_processors,
             help="FQCNs (Fully Qualified Class Names) of logits processors supported by the service.",
+        )
+        model_group.add_argument(
+            "--model-impl",
+            type=str,
+            choices=["auto", "fastdeploy", "paddleformers"],
+            default=EngineArgs.model_impl,
+            help=(
+                "Model implementation backend. "
+                "'auto': Use native FastDeploy when available, fallback to PaddleFormers. "
+                "'fastdeploy': Use only native FastDeploy implementations. "
+                "'paddleformers': Use PaddleFormers backend with FastDeploy optimizations."
+            ),
         )
 
         # Parallel processing parameters group

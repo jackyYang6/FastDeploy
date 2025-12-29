@@ -43,6 +43,7 @@ from fastdeploy.model_executor.layers.attention.base_attention_backend import (
     AttentionMetadata,
 )
 from fastdeploy.model_executor.layers.attention.utils import init_rank_and_device_id
+from fastdeploy.platforms import current_platform
 
 
 @dataclass
@@ -202,6 +203,31 @@ class AppendAttentionBackend(AttentionBackend):
         """get_attntion_meta"""
         return self.attention_metadata
 
+    def _get_identity_rotary_embs(self, original_rotary_embs: paddle.Tensor) -> paddle.Tensor:
+        """
+        Create identity rotary embeddings (cos=1, sin=0) that make RoPE a no-op.
+        
+        This is used when RoPE has already been applied externally (e.g., by PaddleFormers).
+        The identity transformation ensures: x * cos(0) + y * sin(0) = x, preserving the input.
+        
+        NOTE: Shape can change between prefill/decode, so we check if cached shape matches.
+        """
+        # Check if we need to recreate (shape mismatch or not cached)
+        need_recreate = (
+            not hasattr(self, '_identity_rotary_embs') or 
+            self._identity_rotary_embs is None or
+            self._identity_rotary_embs.shape != original_rotary_embs.shape
+        )
+        
+        if need_recreate:
+            # Create identity RoPE: cos=1, sin=0
+            identity = paddle.zeros_like(original_rotary_embs)
+            identity[0] = 1.0  # cos = 1
+            identity[1] = 0.0  # sin = 0
+            self._identity_rotary_embs = identity
+
+        return self._identity_rotary_embs
+
     def get_kv_cache_shape(
         self,
         max_num_blocks: int,
@@ -240,6 +266,15 @@ class AppendAttentionBackend(AttentionBackend):
         forward_mixed
         """
         metadata = self.attention_metadata
+
+        # Determine which rotary_embs to use:
+        # - FD native models: rope_already_applied=False (default) -> use original metadata.rotary_embs
+        # - PaddleFormers fallback: rope_already_applied=True -> use identity RoPE (cos=1, sin=0)
+        rope_already_applied = getattr(forward_meta, 'rope_already_applied', False)
+        if rope_already_applied and metadata.rotary_embs is not None:
+            rotary_embs_to_use = self._get_identity_rotary_embs(metadata.rotary_embs)
+        else:
+            rotary_embs_to_use = metadata.rotary_embs
 
         sliding_window = layer.sliding_window
 

@@ -798,6 +798,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--model-impl",
+        type=str,
+        default="auto",
+        help="Model implementation backend (auto, fastdeploy, paddleformers)",
+    )
+
+    parser.add_argument(
         "--cache-transfer-protocol",
         type=str,
         default="ipc",
@@ -1008,4 +1015,11 @@ def run_worker_proc() -> None:
 
 
 if __name__ == "__main__":
+    # 由于worker是在engine中通过python命令行的方式启动的，因此debug时需要把此进程attach到fastdeploy主进程上进行debug
+    # import debugpy
+    # from fastdeploy.utils import console_logger
+    # console_logger.info("可以开始启动worker进程...")
+    # debugpy.listen(("0.0.0.0", 18568))
+    # debugpy.wait_for_client()  # 阻塞直到 VSCode 连接
+    
     run_worker_proc()

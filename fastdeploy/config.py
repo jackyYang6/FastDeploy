@@ -49,6 +49,9 @@ ConvertType = Literal["none", "embed"]
 
 _ResolvedTask = Literal["generate", "encode", "embed"]
 
+# Model implementation backend options
+ModelImpl = Literal["auto", "fastdeploy", "paddleformers"]
+
 _RUNNER_CONVERTS: dict[RunnerType, list[ConvertType]] = {
     "generate": [],
     "pooling": ["embed"],
@@ -195,6 +198,7 @@ class ModelConfig:
         self.model_format = "auto"
         self.runner = "auto"
         self.convert = "auto"
+        self.model_impl: ModelImpl = "auto"
         self.pooler_config: Optional["PoolerConfig"] = field(init=False)
         self.override_pooler_config: Optional[Union[dict, "PoolerConfig"]] = None
         self.revision = None
@@ -234,6 +238,10 @@ class ModelConfig:
 
     def _post_init(self):
         self.is_unified_ckpt = check_unified_ckpt(self.model)
+
+        # Validate model_impl configuration
+        self._validate_model_impl()
+
         self.runner_type = self._get_runner_type(self.architectures, self.runner)
         self.convert_type = self._get_convert_type(self.architectures, self.runner_type, self.convert)
         registry = self.registry
@@ -249,6 +257,9 @@ class ModelConfig:
 
         if self.runner_type == "generate" and not is_generative_model:
             if is_multimodal_model:
+                pass
+            elif self.model_impl in ("auto", "paddleformers", "paddleformers_pure"):
+                # Skip check for auto/paddleformers - may fallback to paddleformers which supports any model
                 pass
             else:
                 generate_converts = _RUNNER_CONVERTS["generate"]
@@ -268,6 +279,7 @@ class ModelConfig:
         model_info, arch = registry.inspect_model_cls(self.architectures, self)
         self._model_info = model_info
         self._architecture = arch
+        self.architecture = arch
 
         self.pooler_config = self._init_pooler_config()
         self.override_name_from_config()
@@ -279,6 +291,50 @@ class ModelConfig:
         from fastdeploy.model_executor.models.model_base import ModelRegistry
 
         return ModelRegistry()
+
+    def _resolve_runtime_architecture(self) -> str:
+        """
+        Determine which registered architecture should be instantiated at runtime.
+        """
+
+        if self.model_impl == "paddleformers":
+            return "PaddleFormersForCausalLM"
+
+        if getattr(self, "architectures", None):
+            return self.architectures[0]
+
+        raise ValueError("Unable to determine model architecture from configuration.")
+
+    def _validate_model_impl(self):
+        """
+        Validate the model_impl configuration and provide warnings.
+        """
+        valid_impls: list[ModelImpl] = ["auto", "fastdeploy", "paddleformers", "paddleformers_pure"]
+
+        if self.model_impl not in valid_impls:
+            raise ValueError(
+                f"Invalid model_impl: {self.model_impl}. "
+                f"Must be one of: {', '.join(valid_impls)}"
+            )
+
+        if self.model_impl == "paddleformers":
+            logger.warning(
+                "Using PaddleFormers backend (--model-impl paddleformers). "
+                "This will use PaddleFormers models with FastDeploy's attention "
+                "and parallelization strategies."
+            )
+        elif self.model_impl == "paddleformers_pure":
+            logger.warning(
+                "Using Pure PaddleFormers backend (--model-impl paddleformers_pure). "
+                "No layers are replaced - PaddleFormers manages everything including KV cache. "
+                "Single request mode only. For training-inference consistency."
+            )
+        elif self.model_impl == "auto":
+            logger.debug(
+                "Using auto model implementation (--model-impl auto). "
+                "FastDeploy will use native implementations when available, "
+                "or fallback to PaddleFormers for supported models."
+            )
 
     def override_name_from_config(self):
         """
