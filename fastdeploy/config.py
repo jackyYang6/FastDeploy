@@ -279,7 +279,7 @@ class ModelConfig:
         model_info, arch = registry.inspect_model_cls(self.architectures, self)
         self._model_info = model_info
         self._architecture = arch
-        self.architecture = arch
+        self.architectures = [arch]
 
         self.pooler_config = self._init_pooler_config()
         self.override_name_from_config()

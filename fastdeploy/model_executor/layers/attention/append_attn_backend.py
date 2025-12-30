@@ -272,9 +272,7 @@ class AppendAttentionBackend(AttentionBackend):
         # - PaddleFormers fallback: rope_already_applied=True -> use identity RoPE (cos=1, sin=0)
         rope_already_applied = getattr(forward_meta, 'rope_already_applied', False)
         if rope_already_applied and metadata.rotary_embs is not None:
-            rotary_embs_to_use = self._get_identity_rotary_embs(metadata.rotary_embs)
-        else:
-            rotary_embs_to_use = metadata.rotary_embs
+            metadata.rotary_embs = self._get_identity_rotary_embs(metadata.rotary_embs)
 
         sliding_window = layer.sliding_window
 

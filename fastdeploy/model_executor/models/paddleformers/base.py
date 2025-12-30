@@ -847,8 +847,8 @@ class PaddleFormersModelBase(nn.Layer):
                 embed_weight = self.model.get_input_embeddings()
                 if hasattr(embed_weight, 'embeddings') and hasattr(embed_weight.embeddings, 'weight'):
                     embed_tensor = embed_weight.embeddings.weight
-                    self.lm_head.linear.weight.set_value(lm_head_weight)
-                    logger.info(f"✅ Tied lm_head weight from embed_tokens (transposed): shape={lm_head_weight.shape}")
+                    self.lm_head.linear.weight.set_value(embed_tensor)
+                    logger.info(f"✅ Tied lm_head weight from embed_tokens: shape={embed_tensor.shape}")
                 else:
                     logger.warning("⚠️ tie_word_embeddings=True but embed_tokens.embeddings.weight not found!")
             else:
