@@ -22,9 +22,13 @@ from fastdeploy.model_executor.models.model_base import (
 
 from .base import PaddleFormersModelBase
 from .causallm import CausalLMMixin
+from .moe import MoEMixin
+from .vlm import VLMMixin
 
 __all__ = [
     "PaddleFormersForCausalLM",
+    "PaddleFormersVLMForConditionalGeneration",
+    "PaddleFormersForCausalLMMoE",
 ]
 
 
@@ -38,3 +42,28 @@ class PaddleFormersForCausalLM(CausalLMMixin, PaddleFormersModelBase, ModelForCa
     @classmethod
     def name(cls):
         return "PaddleFormersForCausalLM"
+
+
+# ============ MOE Text Generation Models ============
+@ModelRegistry.register_model_class(
+    architecture="PaddleFormersForCausalLMMoE",
+    module_name="paddleformers",
+    category=ModelCategory.TEXT_GENERATION,
+)
+class PaddleFormersForCausalLMMoE(MoEMixin, CausalLMMixin, PaddleFormersModelBase, ModelForCasualLM):
+    @classmethod
+    def name(cls):
+        return "PaddleFormersForCausalLMMoE"
+
+
+# ============ Vision-Language Models ============
+@ModelRegistry.register_model_class(
+    architecture="PaddleFormersVLMForConditionalGeneration",
+    module_name="paddleformers",
+    category=ModelCategory.MULTIMODAL,
+)
+class PaddleFormersVLMForConditionalGeneration(VLMMixin, CausalLMMixin, PaddleFormersModelBase, ModelForCasualLM):
+    @classmethod
+    def name(cls):
+        return "PaddleFormersVLMForConditionalGeneration"
+

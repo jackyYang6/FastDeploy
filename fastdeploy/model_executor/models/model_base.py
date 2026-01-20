@@ -188,12 +188,29 @@ class ModelRegistry:
         """
         model_impl = getattr(model_config, "model_impl", "auto")
 
+        # Determine if this is a VLM or MOE architecture
+        is_vlm = self._is_vlm_architecture(architecture, model_config)
+        is_moe = self._is_moe_architecture(architecture, model_config)
+
         # Explicit paddleformers backend requested
         if model_impl == "paddleformers":
-            backend_arch = "PaddleFormersForCausalLM"
+            # Detect VLM models (multimodal)
+            enable_mm = getattr(model_config, "enable_mm", False)
+            if enable_mm:
+                backend_arch = "PaddleFormersVLMForConditionalGeneration"
+            elif is_moe:
+                backend_arch = "PaddleFormersForCausalLMMoE"
+            else:
+                backend_arch = "PaddleFormersForCausalLM"
         elif model_impl == "auto" and is_fallback:
             # Auto mode fallback when no native implementation exists
-            backend_arch = "PaddleFormersForCausalLM"
+            enable_mm = getattr(model_config, "enable_mm", False)
+            if enable_mm:
+                backend_arch = "PaddleFormersVLMForConditionalGeneration"
+            elif is_moe:
+                backend_arch = "PaddleFormersForCausalLMMoE"
+            else:
+                backend_arch = "PaddleFormersForCausalLM"
         elif model_impl == "fastdeploy":
             return None
         else:
@@ -223,6 +240,69 @@ class ModelRegistry:
             return None
 
         return backend_arch
+
+    def _is_vlm_architecture(self, architecture: str, model_config: ModelConfig) -> bool:
+        """Detect if an architecture is a Vision-Language Model.
+
+        Args:
+            architecture: The model architecture name
+            model_config: The model configuration
+
+        Returns:
+            True if this is a VLM architecture, False otherwise
+        """
+        # 1. Architecture name contains VL, Vision, or ends with ForConditionalGeneration with VL pattern
+        arch_lower = architecture.lower()
+        if "vl" in arch_lower or "vision" in arch_lower:
+            return True
+
+        # 2. Has vision_config in pretrained config
+        if hasattr(model_config, "vision_config") and model_config.vision_config is not None:
+            return True
+
+        # 3. Model type contains VL patterns
+        model_type = getattr(model_config, "model_type", "").lower()
+        if any(vlm_type in model_type for vlm_type in ["vl", "vision", "visual"]):
+            return True
+
+        # 4. Has image/video token IDs (common for VLM)
+        if hasattr(model_config, "image_token_id") or hasattr(model_config, "video_token_id"):
+            return True
+
+        return False
+
+    def _is_moe_architecture(self, architecture: str, model_config: ModelConfig) -> bool:
+        """Detect if an architecture is a Mixture of Experts (MOE) Model.
+
+        Args:
+            architecture: The model architecture name
+            model_config: The model configuration
+
+        Returns:
+            True if this is an MOE architecture, False otherwise
+        """
+        # 1. Architecture name contains MOE or MixtureOfExperts patterns
+        arch_lower = architecture.lower()
+        moe_keywords = ["moe", "mixtureofexperts", "mixture-of-experts", "experts"]
+        if any(moe_keyword in arch_lower for moe_keyword in moe_keywords):
+            return True
+
+        # 2. Check for MOE-related config attributes in pretrained config
+        # Common MOE config keys: num_experts, num_local_experts, n_routed_experts, top_k
+        if hasattr(model_config, "num_experts"):
+            return True
+        if hasattr(model_config, "num_local_experts"):
+            return True
+        if hasattr(model_config, "n_routed_experts"):
+            return True
+
+        # 3. Check for top_k (expert routing parameter)
+        if hasattr(model_config, "num_experts_per_tok"):
+            return True
+        if hasattr(model_config, "top_k") and getattr(model_config, "top_k") > 1:
+            return True
+
+        return False
 
     def _raise_for_unsupported(self, architectures: list[str]):
         all_supported_archs = self.get_supported_archs()

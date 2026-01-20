@@ -793,6 +793,56 @@ class PaddleFormersModelBase(nn.Layer):
             model_sublayer_name = re.sub(r"\.(weight|bias)$", "", model_param_name)
             process_fn(model_sublayer_name, param)
 
+        # ============ MOE Expert Weight Loading ============
+        # Load MOE expert weights after all other weights are processed
+        if hasattr(self, 'num_moe_layers') and self.num_moe_layers > 0:
+            logger.info(f"Loading MOE expert weights for {self.num_moe_layers} layers...")
+
+            # Build a weight lookup for fast access
+            weights_dict = {name: weight for name, weight in weights}
+
+            # Get expert weight mapping from MoEMixin
+            # This returns (param_name_prefix, weight_name, expert_id, shard_id) tuples
+            expert_mapping = self.get_expert_mapping()
+
+            loaded_expert_count = 0
+            for param_name_prefix, weight_name, expert_id, shard_id in expert_mapping:
+                # weight_name is already formatted (e.g., "experts.0.gate_proj.")
+                ckpt_weight_name = weight_name
+
+                # Check if weight exists in checkpoint
+                if ckpt_weight_name not in weights_dict:
+                    continue
+
+                loaded_weight = weights_dict[ckpt_weight_name]
+
+                # Build full parameter name in the model
+                # Remove trailing dot from weight_name and add "weight" suffix if needed
+                weight_name_stripped = weight_name.rstrip('.')
+                if not weight_name_stripped.endswith('.weight') and not weight_name_stripped.endswith('.bias'):
+                    # Add .weight suffix if not present
+                    weight_name_stripped += '.weight'
+
+                full_param_name = f"model.{weight_name_stripped}"
+                if full_param_name not in params_dict:
+                    # Try without "model." prefix
+                    full_param_name = weight_name_stripped
+                    if full_param_name not in params_dict:
+                        continue
+
+                # Load weight using the parameter's weight_loader
+                param = params_dict[full_param_name]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
+                weight_loader(param, loaded_weight, shard_id, source="moe_expert")
+
+                # Post-process the loaded weight
+                model_sublayer_name = re.sub(r"\.(weight|bias)$", "", full_param_name)
+                process_fn(model_sublayer_name, param)
+
+                loaded_expert_count += 1
+
+            logger.info(f"MOE expert weights loaded: {loaded_expert_count} weights")
+
         logger.info(f"Weight loading completed: {loaded_count} loaded, {skipped_count} skipped")
 
         if hasattr(self, "lm_head"):
