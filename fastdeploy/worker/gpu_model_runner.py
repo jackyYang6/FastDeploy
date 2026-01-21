@@ -2359,16 +2359,16 @@ class GPUModelRunner(ModelRunnerBase):
         # 3. Execute model
         if self.enable_mm:
             model_output = self.model(
-                self.forward_meta.ids_remove_padding,
-                self.share_inputs["image_features"],
-                self.forward_meta,
+                ids_remove_padding=self.forward_meta.ids_remove_padding,
+                image_features=self.share_inputs["image_features"],
+                forward_meta=self.forward_meta,
             )
         else:
             model_output = self.model(
                 ids_remove_padding=self.forward_meta.ids_remove_padding,
                 forward_meta=self.forward_meta,
             )
-
+        
         # NOTE(wufeisheng): If `not_need_stop`` is False, it means the current worker is in an idle state.
         # This logic is not used in TP (Tensor Parallelism) mode. However, in EP (Expert Parallelism) mode,
         # Then there is data on other runner, the current runner is required to execute part of the model.
@@ -3013,8 +3013,34 @@ class GPUModelRunner(ModelRunnerBase):
             return self.extract_vision_features_qwen(multi_vision_inputs)
         elif "paddleocr" in self.model_config.model_type:
             return self.extract_vision_features_paddleocr(multi_vision_inputs)
+        # PaddleFormers VLM fallback: check if model has visual encoder with extract_feature method
+        elif hasattr(self.model, "visual") and hasattr(self.model.visual, "extract_feature"):
+            return self.extract_vision_features_paddleformers(multi_vision_inputs)
         else:
             raise ValueError(f"multiple modalities model {self.model_config.model_type} is not supported")
+
+    def extract_vision_features_paddleformers(self, vision_inputs: dict[str, list[paddle.Tensor]]) -> paddle.Tensor:
+        """Extract vision features using PaddleFormers fallback visual encoder.
+        
+        This method is used for VLM models that use the PaddleFormers fallback backend.
+        The visual encoder is preserved from the original PaddleFormers model.
+        """
+        assert len(vision_inputs["images_lst"]) > 0, "at least one image needed"
+        
+        grid_thw = paddle.to_tensor(vision_inputs["grid_thw_lst"], dtype=paddle.int64)
+        images = paddle.concat(vision_inputs["images_lst"]).cast(self.model_config.dtype)
+        
+        with paddle.amp.auto_cast(
+            True,
+            custom_black_list=self.amp_black,
+            custom_white_list=self.amp_white,
+            level="O2",
+            dtype=self.model_config.dtype,
+        ):
+            image_features = self.model.visual.extract_feature(images, grid_thw)
+        
+        return image_features
+
 
     @paddle.no_grad()
     def _dummy_run_extract_vision_features(self):

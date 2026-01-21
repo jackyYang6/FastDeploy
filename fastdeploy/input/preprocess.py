@@ -173,6 +173,20 @@ class InputPreprocessor:
                         reasoning_parser_obj=reasoning_parser_obj,
                         enable_processor_cache=self.enable_processor_cache,
                     )
+                elif "PaddleFormersVLM" in architecture:
+                    # PaddleFormers VLM Fallback - use generic VL processor
+                    from fastdeploy.model_executor.models.paddleformers.processor import (
+                        PaddleFormersVLProcessor,
+                    )
+
+                    self.processor = PaddleFormersVLProcessor(
+                        config=self.model_config,
+                        model_name_or_path=self.model_name_or_path,
+                        limit_mm_per_prompt=self.limit_mm_per_prompt,
+                        mm_processor_kwargs=self.mm_processor_kwargs,
+                        reasoning_parser_obj=reasoning_parser_obj,
+                        tool_parser_obj=tool_parser_obj,
+                    )
                 else:
                     raise ValueError(f"Unsupported model processor architecture: {architecture}. ")
 
