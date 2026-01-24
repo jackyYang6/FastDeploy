@@ -415,23 +415,28 @@ class PaddleFormersFleetModelBase(nn.Layer):
         input_ids = ids_remove_padding.unsqueeze(0)
         position_ids = position_ids.unsqueeze(0)
         
-        # Call Fleet model
-        outputs = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            use_cache=False,
-            return_dict=False,
-        )
+        # Fleet PipelineLayer uses dict_args format for input
+        dict_args = {
+            "input_ids": input_ids,
+            "position_ids": position_ids,
+            "attention_mask": None,
+        }
         
-        # Extract hidden states
-        # Fleet output: tuple, first element is hidden_states [B, S, H]
-        if isinstance(outputs, tuple):
+        # Call Fleet model with dict input
+        outputs = self.model(dict_args)
+        
+        # Extract hidden states from Fleet output
+        # Fleet PipelineLayer output is dict with "hidden_states" or direct tensor
+        if isinstance(outputs, dict):
+            hidden_states = outputs.get("hidden_states", outputs.get("logits"))
+        elif isinstance(outputs, tuple):
             hidden_states = outputs[0]
         else:
             hidden_states = outputs
         
         # Remove batch dimension: [B, S, H] -> [S, H]
-        hidden_states = hidden_states.squeeze(0)
+        if hidden_states.ndim == 3:
+            hidden_states = hidden_states.squeeze(0)
         
         return hidden_states
     
@@ -613,6 +618,11 @@ class FleetMOEMixin():
                 weight_to_load = self._maybe_transpose_weight(
                     loaded_name, loaded_weight, param.shape
                 )
+                
+                # Handle dtype conversion for MOE gate weights (requires float32)
+                if "mlp.gate.weight" in target_name or "mlp.gate.weight" in loaded_name:
+                    if weight_to_load.dtype != param.dtype:
+                        weight_to_load = weight_to_load.astype(param.dtype)
                 
                 # Load weight
                 if param.shape == weight_to_load.shape:

@@ -21,7 +21,7 @@ from fastdeploy.model_executor.models.model_base import (
 )
 
 from .base import PaddleFormersModelBase
-from .base_fleet import PaddleFormersFleetModelBase, FleetMoEMixin
+from .base_fleet import PaddleFormersFleetModelBase, FleetMOEMixin
 from .causallm import CausalLMMixin
 from .moe import MoEMixin
 from .vlm import VLMMixin
@@ -64,7 +64,7 @@ class PaddleFormersForCausalLMMoE(MoEMixin, CausalLMMixin, PaddleFormersModelBas
     module_name="paddleformers",
     category=ModelCategory.TEXT_GENERATION,
 )
-class PaddleFormersFleetForCausalLMMoE(FleetMoEMixin, CausalLMMixin, PaddleFormersFleetModelBase, ModelForCasualLM):
+class PaddleFormersFleetForCausalLMMoE(FleetMOEMixin, CausalLMMixin, PaddleFormersFleetModelBase, ModelForCasualLM):
     """MOE model using Fleet backend with fused QKV/Gate+Up layers."""
     @classmethod
     def name(cls):
