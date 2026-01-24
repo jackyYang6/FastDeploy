@@ -233,7 +233,7 @@ class PaddleFormersFleetModelBase(nn.Layer):
     """
     
     def __init__(self, fd_config: "FDConfig", **kwargs):
-        super().__init__()
+        super().__init__(fd_config)
         
         from paddleformers.transformers import AutoConfig
         from paddleformers.utils.log import logger
@@ -480,49 +480,13 @@ class PaddleFormersFleetModelBase(nn.Layer):
         return position_ids
 
 
-class PaddleFormersFleetForCausalLM(PaddleFormersFleetModelBase):
+class FleetMOEMixin():
     """
     Fleet MOE model for causal language modeling.
     
     Provides:
-    - lm_head for logits computation
-    - compute_logits() interface
-    - load_weights() with QKV/Gate+Up fusion
+    - load_weights() with Fleet QKV/Gate+Up fusion
     """
-    
-    def __init__(self, fd_config: "FDConfig", **kwargs):
-        super().__init__(fd_config, **kwargs)
-        
-        # Create lm_head
-        with_bias = getattr(self.text_config, "use_bias", False) or \
-                    getattr(self.text_config, "bias", False)
-        
-        self.lm_head = ParallelLMHead(
-            fd_config=fd_config,
-            embedding_dim=self.text_config.hidden_size,
-            num_embeddings=self.text_config.vocab_size,
-            prefix="lm_head",
-            with_bias=with_bias,
-        )
-    
-    def compute_logits(self, hidden_state: paddle.Tensor, **kwargs) -> paddle.Tensor:
-        """
-        Compute logits from hidden states.
-        
-        Args:
-            hidden_state: [num_tokens, hidden_size]
-            **kwargs: Additional arguments
-            
-        Returns:
-            logits: [num_tokens, vocab_size]
-        """
-        logits = self.lm_head(hidden_state)
-        logits = logits.astype(paddle.float32)
-        
-        # Mask invalid tokens beyond original vocab size
-        logits[:, self.ori_vocab_size:] = -float("inf")
-        
-        return logits
     
     @paddle.no_grad()
     def load_weights(self, weights: Iterable[tuple[str, paddle.Tensor]]):
