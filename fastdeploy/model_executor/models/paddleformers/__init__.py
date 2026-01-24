@@ -21,6 +21,7 @@ from fastdeploy.model_executor.models.model_base import (
 )
 
 from .base import PaddleFormersModelBase
+from .base_fleet import PaddleFormersFleetForCausalLM
 from .causallm import CausalLMMixin
 from .moe import MoEMixin
 from .vlm import VLMMixin
@@ -29,6 +30,7 @@ __all__ = [
     "PaddleFormersForCausalLM",
     "PaddleFormersVLMForConditionalGeneration",
     "PaddleFormersForCausalLMMoE",
+    "PaddleFormersFleetForCausalLMMoE",
 ]
 
 
@@ -54,6 +56,19 @@ class PaddleFormersForCausalLMMoE(MoEMixin, CausalLMMixin, PaddleFormersModelBas
     @classmethod
     def name(cls):
         return "PaddleFormersForCausalLMMoE"
+
+
+# ============ Fleet MOE Text Generation Models ============
+@ModelRegistry.register_model_class(
+    architecture="PaddleFormersFleetForCausalLMMoE",
+    module_name="paddleformers",
+    category=ModelCategory.TEXT_GENERATION,
+)
+class PaddleFormersFleetForCausalLMMoE(PaddleFormersFleetForCausalLM, ModelForCasualLM):
+    """MOE model using Fleet backend with fused QKV/Gate+Up layers."""
+    @classmethod
+    def name(cls):
+        return "PaddleFormersFleetForCausalLMMoE"
 
 
 # ============ Vision-Language Models ============
