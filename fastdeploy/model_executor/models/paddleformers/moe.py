@@ -184,20 +184,35 @@ class MoEMixin:
         if num_experts == 0:
             return []
         
-        # Common checkpoint naming patterns
-        ckpt_patterns = [
-            ("gate_proj", "down_proj", "up_proj"),  # Most common
-            ("w1", "w2", "w3"),  # Mixtral style
-        ]
-        
         expert_mapping = []
-        for gate_proj, down_proj, up_proj in ckpt_patterns:
+        
+        # Check if using fused up_gate_proj format (Qwen3-MoE style)
+        use_fused_ffn = getattr(self, '_use_fused_ffn', False)
+        
+        if use_fused_ffn:
+            # Fused format: up_gate_proj (already fused in checkpoint)
             expert_mapping.extend(
                 FusedMoE.make_expert_params_mapping(
-                    ckpt_gate_proj_name=gate_proj,
-                    ckpt_down_proj_name=down_proj,
-                    ckpt_up_proj_name=up_proj,
+                    ckpt_gate_up_proj_name="up_gate_proj",
+                    ckpt_down_proj_name="down_proj",
                     num_experts=num_experts,
                 )
             )
+        else:
+            # Separate format: gate_proj + up_proj
+            ckpt_patterns = [
+                ("gate_proj", "down_proj", "up_proj"),
+                ("w1", "w2", "w3"),
+            ]
+            
+            for gate_proj, down_proj, up_proj in ckpt_patterns:
+                expert_mapping.extend(
+                    FusedMoE.make_expert_params_mapping(
+                        ckpt_gate_proj_name=gate_proj,
+                        ckpt_down_proj_name=down_proj,
+                        ckpt_up_proj_name=up_proj,
+                        num_experts=num_experts,
+                    )
+                )
+        
         return expert_mapping

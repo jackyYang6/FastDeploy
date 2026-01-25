@@ -196,6 +196,10 @@ class PaddleFormersModelBase(nn.Layer):
         model_type = getattr(self.paddleformers_config, "model_type", "").lower()
         supported_fused_qkv_models = ["qwen3", "qwen2"]
 
+        # Enable fd_fallback for MOE models to use Qwen3MoeExperts class
+        # This creates experts with fused weight format [E, H, 2*I] compatible with FusedMoE
+        self.paddleformers_config.fd_fallback = True
+
         tp_size = fd_config.parallel_config.tensor_parallel_size
         if tp_size > 1:
             self._use_fused_qkv = False
@@ -799,50 +803,47 @@ class PaddleFormersModelBase(nn.Layer):
 
         # ============ MOE Expert Weight Loading ============
         # Load MOE expert weights after all other weights are processed
+        # With fd_fallback=True, PaddleFormers creates Qwen3MoeExperts with fused weights:
+        #   - up_gate_proj: [num_experts, hidden_size, 2 * intermediate_size]
+        #   - down_proj: [num_experts, intermediate_size, hidden_size]
+        # These are replaced by FusedMoE which has same weight format.
         if hasattr(self, 'num_moe_layers') and self.num_moe_layers > 0:
             logger.info(f"Loading MOE expert weights for {self.num_moe_layers} layers...")
 
-            # weights_dict already created at the beginning of load_weights()
-
-            # Get expert weight mapping from MoEMixin
-            # This returns (param_name_prefix, weight_name, expert_id, shard_id) tuples
-            expert_mapping = self.get_expert_mapping()
-
             loaded_expert_count = 0
-            for param_name_prefix, weight_name, expert_id, shard_id in expert_mapping:
-                # weight_name is already formatted (e.g., "experts.0.gate_proj.")
-                ckpt_weight_name = weight_name
-
-                # Check if weight exists in checkpoint
-                if ckpt_weight_name not in weights_dict:
+            
+            # Iterate through checkpoint weights and find MOE expert weights
+            for weight_name, weight_tensor in weights_dict.items():
+                # Match pattern: model.layers.X.mlp.experts.up_gate_proj or down_proj
+                # With fd_fallback=True, weights are fused format (not per-expert)
+                if ".mlp.experts." not in weight_name:
                     continue
-
-                loaded_weight = weights_dict[ckpt_weight_name]
-
-                # Build full parameter name in the model
-                # Remove trailing dot from weight_name and add "weight" suffix if needed
-                weight_name_stripped = weight_name.rstrip('.')
-                if not weight_name_stripped.endswith('.weight') and not weight_name_stripped.endswith('.bias'):
-                    # Add .weight suffix if not present
-                    weight_name_stripped += '.weight'
-
-                full_param_name = f"model.{weight_name_stripped}"
-                if full_param_name not in params_dict:
-                    # Try without "model." prefix
-                    full_param_name = weight_name_stripped
-                    if full_param_name not in params_dict:
-                        continue
-
-                # Load weight using the parameter's weight_loader
-                param = params_dict[full_param_name]
-                weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
-                weight_loader(param, loaded_weight, shard_id, source="moe_expert")
-
-                # Post-process the loaded weight
-                model_sublayer_name = re.sub(r"\.(weight|bias)$", "", full_param_name)
-                process_fn(model_sublayer_name, param)
-
-                loaded_expert_count += 1
+                if not weight_name.endswith('.weight'):
+                    continue
+                
+                # Extract layer index
+                layer_match = re.search(r'layers\.(\d+)\.mlp\.experts', weight_name)
+                if layer_match is None:
+                    continue
+                layer_idx = int(layer_match.group(1))
+                
+                if layer_idx >= len(self.moe_layers):
+                    logger.warning(f"Layer index {layer_idx} >= num_moe_layers {len(self.moe_layers)}")
+                    continue
+                
+                fused_moe = self.moe_layers[layer_idx]
+                
+                # Determine which weight this is
+                if "up_gate_proj" in weight_name:
+                    param = fused_moe.up_gate_proj_weight
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
+                    weight_loader(param, weight_tensor)
+                    loaded_expert_count += 1
+                elif "down_proj" in weight_name:
+                    param = fused_moe.down_proj_weight
+                    weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
+                    weight_loader(param, weight_tensor)
+                    loaded_expert_count += 1
 
             logger.info(f"MOE expert weights loaded: {loaded_expert_count} weights")
 
