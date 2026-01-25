@@ -97,8 +97,11 @@ class MoEMixin:
         
         if num_experts is None:
             # Not a MOE model, skip
+            logger.info("No MOE config found, skipping MOE replacement")
             super().recursive_replace()
             return
+        
+        logger.info(f"Starting MOE replacement with num_experts={num_experts}")
         
         top_k = getattr(text_config, 'num_experts_per_tok',
                 getattr(text_config, 'top_k', 2))
@@ -121,10 +124,13 @@ class MoEMixin:
                 qual_name = maybe_prefix(prefix, child_name)
                 
                 # Detect MOE experts: child_name == "experts"
-                # GPT-OSS: GptOssExperts(nn.Layer) with forward(hidden, router_indices, routing_weights)
-                # Qwen3: nn.LayerList of MLP modules
+                # With fd_fallback=True: Qwen3MoeExperts class
+                # Without fd_fallback: nn.LayerList of MLP modules
                 if child_name == "experts":
                     parent_mlp = module
+                    
+                    # Log the experts type for debugging
+                    logger.info(f"Found experts at {qual_name}: {type(child_module).__name__}")
                     
                     # Check if parent has gate/router (this is a MOE block)
                     gate_layer = getattr(parent_mlp, 'gate', None) or getattr(parent_mlp, 'router', None)
@@ -160,14 +166,17 @@ class MoEMixin:
                         self.num_moe_layers += 1
                         
                         logger.info(f"Replaced MOE experts at {qual_name} with PaddleFormersFusedMoE "
-                                   f"(num_experts={num_experts}, top_k={top_k})")
+                                   f"(num_experts={num_experts}, top_k={top_k}, layer_idx={layer_idx})")
                     else:
                         # Has "experts" but no gate, recurse into it
+                        logger.warning(f"Found 'experts' at {qual_name} but no gate/router found")
                         _recursive_replace_moe(child_module, prefix=qual_name)
                 else:
                     _recursive_replace_moe(child_module, prefix=qual_name)
         
         _recursive_replace_moe(self.model, prefix="model")
+        
+        logger.info(f"MOE replacement complete: {self.num_moe_layers} layers replaced")
         
         # Call parent's recursive_replace for non-MOE replacements
         super().recursive_replace()

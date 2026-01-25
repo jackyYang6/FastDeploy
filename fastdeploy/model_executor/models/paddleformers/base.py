@@ -809,6 +809,7 @@ class PaddleFormersModelBase(nn.Layer):
         # These are replaced by FusedMoE which has same weight format.
         if hasattr(self, 'num_moe_layers') and self.num_moe_layers > 0:
             logger.info(f"Loading MOE expert weights for {self.num_moe_layers} layers...")
+            logger.info(f"MOE layers tracked: {len(self.moe_layers)}")
 
             loaded_expert_count = 0
             
@@ -821,29 +822,77 @@ class PaddleFormersModelBase(nn.Layer):
                 if not weight_name.endswith('.weight'):
                     continue
                 
-                # Extract layer index
-                layer_match = re.search(r'layers\.(\d+)\.mlp\.experts', weight_name)
-                if layer_match is None:
-                    continue
-                layer_idx = int(layer_match.group(1))
-                
-                if layer_idx >= len(self.moe_layers):
-                    logger.warning(f"Layer index {layer_idx} >= num_moe_layers {len(self.moe_layers)}")
-                    continue
-                
-                fused_moe = self.moe_layers[layer_idx]
-                
-                # Determine which weight this is
-                if "up_gate_proj" in weight_name:
-                    param = fused_moe.up_gate_proj_weight
-                    weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
-                    weight_loader(param, weight_tensor)
+                # Skip per-expert weights (e.g., experts.0.up_gate_proj) - only load fused weights
+                # Fused format: experts.up_gate_proj.weight (no expert index)
+                import re as re_mod
+                if re_mod.search(r'experts\.\d+\.', weight_name):
+                    # This is per-expert format, need to handle differently
+                    # Extract expert_id from weight name
+                    expert_match = re_mod.search(r'experts\.(\d+)\.', weight_name)
+                    if expert_match is None:
+                        continue
+                    expert_id = int(expert_match.group(1))
+                    
+                    # Extract layer index
+                    layer_match = re_mod.search(r'layers\.(\d+)\.mlp\.experts', weight_name)
+                    if layer_match is None:
+                        continue
+                    layer_idx = int(layer_match.group(1))
+                    
+                    if layer_idx >= len(self.moe_layers):
+                        logger.warning(f"Layer index {layer_idx} >= num_moe_layers {len(self.moe_layers)}")
+                        continue
+                    
+                    fused_moe = self.moe_layers[layer_idx]
+                    
+                    # Determine shard_id and param
+                    if "up_gate_proj" in weight_name:
+                        param = fused_moe.up_gate_proj_weight
+                        shard_id = None  # fused gate+up
+                    elif "gate_proj" in weight_name:
+                        param = fused_moe.up_gate_proj_weight
+                        shard_id = "gate"
+                    elif "up_proj" in weight_name:
+                        param = fused_moe.up_gate_proj_weight
+                        shard_id = "up"
+                    elif "down_proj" in weight_name:
+                        param = fused_moe.down_proj_weight
+                        shard_id = "down"
+                    else:
+                        continue
+                    
+                    # Use FusedMoE's weight_loader with expert_id
+                    fused_moe.weight_loader(param, weight_tensor, expert_id, shard_id)
                     loaded_expert_count += 1
-                elif "down_proj" in weight_name:
-                    param = fused_moe.down_proj_weight
-                    weight_loader = getattr(param, "weight_loader", default_weight_loader(self.fd_config))
-                    weight_loader(param, weight_tensor)
-                    loaded_expert_count += 1
+                    
+                    if loaded_expert_count <= 5:
+                        logger.info(f"  Loaded MOE weight: {weight_name} -> layer {layer_idx}, expert {expert_id}")
+                else:
+                    # Fused format: experts.up_gate_proj.weight (all experts in one tensor)
+                    layer_match = re_mod.search(r'layers\.(\d+)\.mlp\.experts', weight_name)
+                    if layer_match is None:
+                        continue
+                    layer_idx = int(layer_match.group(1))
+                    
+                    if layer_idx >= len(self.moe_layers):
+                        logger.warning(f"Layer index {layer_idx} >= num_moe_layers {len(self.moe_layers)}")
+                        continue
+                    
+                    fused_moe = self.moe_layers[layer_idx]
+                    
+                    # Load fused weights directly
+                    if "up_gate_proj" in weight_name:
+                        param = fused_moe.up_gate_proj_weight
+                        fused_moe._load_fused_experts_weight(param, weight_tensor)
+                        loaded_expert_count += 1
+                        if loaded_expert_count <= 5:
+                            logger.info(f"  Loaded fused MOE weight: {weight_name} -> layer {layer_idx}")
+                    elif "down_proj" in weight_name:
+                        param = fused_moe.down_proj_weight
+                        fused_moe._load_fused_experts_weight(param, weight_tensor)
+                        loaded_expert_count += 1
+                        if loaded_expert_count <= 5:
+                            logger.info(f"  Loaded fused MOE weight: {weight_name} -> layer {layer_idx}")
 
             logger.info(f"MOE expert weights loaded: {loaded_expert_count} weights")
 
