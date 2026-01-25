@@ -609,6 +609,10 @@ class PaddleFormersModelBase(nn.Layer):
             process_weights_after_loading,
         )
 
+        # Convert iterator to list to avoid exhaustion during MOE weight loading
+        weights_list = list(weights)
+        weights_dict = {name: weight for name, weight in weights_list}
+
         sublayers_dict = dict(self.named_sublayers())
         process_fn = process_weights_after_loading(sublayers_dict, self.fd_config)
         params_dict = dict(self.named_parameters())
@@ -693,7 +697,7 @@ class PaddleFormersModelBase(nn.Layer):
             fused = fused.reshape([hidden_size, -1])
             return fused
 
-        for loaded_weight_name, loaded_weight in weights:
+        for loaded_weight_name, loaded_weight in weights_list:
             # Handle QKV weight loading: collect q/k/v and fuse when all 3 are ready
             # Only when fused QKV is enabled for this model
             if self._use_fused_qkv:
@@ -798,8 +802,7 @@ class PaddleFormersModelBase(nn.Layer):
         if hasattr(self, 'num_moe_layers') and self.num_moe_layers > 0:
             logger.info(f"Loading MOE expert weights for {self.num_moe_layers} layers...")
 
-            # Build a weight lookup for fast access
-            weights_dict = {name: weight for name, weight in weights}
+            # weights_dict already created at the beginning of load_weights()
 
             # Get expert weight mapping from MoEMixin
             # This returns (param_name_prefix, weight_name, expert_id, shard_id) tuples
