@@ -19,6 +19,7 @@ import glob
 import os
 import re
 import time
+import yaml
 from multiprocessing.shared_memory import SharedMemory
 from typing import Any, Dict, List
 
@@ -67,8 +68,6 @@ class DynamicWeightManager:
         """Capture and store initial model parameters state."""
         for model in self.model_list:
             for name, param in model.state_dict().items():
-                if hasattr(param, "_is_initialized") and not param._is_initialized():
-                    param.initialize()
                 logger.info(f"Model param: {name}, shape={param.shape}, dtype={param.dtype}, place={param.place}")
                 self.state_dict[name] = param
 
@@ -93,7 +92,8 @@ class DynamicWeightManager:
                     )
             return is_valid
 
-        if version is None or version == "":
+        bootstrap_load = version is None or version == ""
+        if bootstrap_load:
             version = self.read_model_version_from_file()
         if version is None or version == "":
             raise Exception(
@@ -103,7 +103,7 @@ class DynamicWeightManager:
 
         logger.info(
             f"START rank:{self.local_rank}/{self.nranks} update_weights_by_rdma, "
-            f"version:{version}, verify_checksum:{verify_checksum}"
+            f"version:{version}, verify_checksum:{verify_checksum}, bootstrap_load:{bootstrap_load}"
         )
 
         if self.rdma_handle is None:
@@ -128,8 +128,14 @@ class DynamicWeightManager:
             raise ValueError(error_msg)
 
         update_start = time.perf_counter()
-        for name, param in old_state_dict.items():
-            param.set_value(new_state_dict[name])
+        for name, target_param in old_state_dict.items():
+            new_param = new_state_dict[name]
+            if bootstrap_load and not target_param._is_initialized():
+                new_param = new_param.cuda()
+                new_param._share_buffer_to(target_param)
+            else:
+                target_param.set_value(new_param)
+
         update_cost = time.perf_counter() - update_start
         logger.info(f"params set value cost {update_cost:.2f} seconds")
         total_cost = time.perf_counter() - sync_start
@@ -476,14 +482,24 @@ class DynamicWeightManager:
 
     def read_model_version_from_file(self):
         model_dir = self.fd_config.model_config.model
-        version_file = os.path.join(model_dir, "version.txt")
+        version_file = os.path.join(model_dir, "version.yaml")
         try:
             with open(version_file, "r", encoding="utf-8") as f:
-                version = f.read().strip()
-            return version
-        except (FileNotFoundError, OSError, IOError) as e:
-            logger.error(f"Failed to read model version file '{version_file}': {e}")
-            return None
+                version_info = yaml.safe_load(f) or {}
+
+            if not isinstance(version_info, dict):
+                logger.error(f"Failed to read model step from '{version_file}': yaml content is not a mapping")
+                return None
+
+            step = version_info.get("step")
+            if step is None:
+                logger.error(f"Failed to read model step from '{version_file}': missing 'step' field")
+                return None
+
+            return str(step)
+        except (FileNotFoundError, OSError, IOError, yaml.YAMLError) as e:
+            logger.error(f"Failed to read model step from '{version_file}': {e}")
+            return None        
 
     @staticmethod
     def check_model_weights_status(model_weights_status, kv_cache_status, model_runner, pid, block):
