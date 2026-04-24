@@ -1544,6 +1544,89 @@ class TestPrefixCacheManagerCoverage(unittest.TestCase):
         manager.reset()
         self.assertEqual(manager.cpu_free_block_list, [])
 
+    @patch("fastdeploy.cache_manager.prefix_cache_manager.envs")
+    def test_free_cpu_block_ids_flushes_cache_gone_with_as_only_flush(self, mock_envs):
+        """Verify free_cpu_block_ids sends flush(flush_cache_exists=False) with correct start_write_block_idx."""
+        mock_envs.FD_AS_ONLY_FLUSH = True
+        manager = _create_manager(num_gpu_blocks=4, num_cpu_blocks=4)
+        manager.kvcache_storage_backend = "attention_store"
+
+        # Create a CPU node at depth=3 in the LRU heap
+        cpu_hash = get_hash_str([7, 8])
+        node = BlockNode(
+            88,
+            [7, 8],
+            cpu_hash,
+            3,
+            0,
+            2,
+            cpu_hash,
+            0,
+            parent=manager.radix_tree_root,
+            cache_status=CacheStatus.CPU,
+        )
+        node.shared_count = 0
+        node.block_id = 10
+        manager.radix_tree_root.children[cpu_hash] = node
+        manager.cpu_lru_leaf_heap.append(node)
+        manager.cpu_lru_leaf_set.add(node)
+
+        # Mock issue_write_back_storage_task to capture the task
+        captured_tasks = []
+
+        def mock_issue(task, is_sync=True):
+            captured_tasks.append(task)
+
+        manager.issue_write_back_storage_task = mock_issue
+
+        freed = manager.free_cpu_block_ids(1)
+
+        self.assertEqual(freed, 1)
+        # Should have issued exactly one flush task
+        self.assertEqual(len(captured_tasks), 1)
+        flush_task = captured_tasks[0]
+        # Verify flush_cache_exists=False (cache gone)
+        self.assertFalse(flush_task.flush_cache_exists)
+        # Verify token_ids come from the node
+        self.assertEqual(flush_task.token_ids, [7, 8])
+        # Verify gpu_block_ids is empty (flush-only, no data transfer)
+        self.assertEqual(flush_task.gpu_block_ids, [])
+        # Verify start_write_block_idx = depth - 1
+        self.assertEqual(flush_task.start_write_block_idx, 2)
+
+    def test_free_cpu_block_ids_no_flush_without_attention_store(self):
+        """Verify free_cpu_block_ids does NOT flush when backend is not attention_store."""
+        manager = _create_manager(num_gpu_blocks=4, num_cpu_blocks=4)
+        manager.kvcache_storage_backend = "mooncake"
+
+        cpu_hash = get_hash_str([5, 6])
+        node = BlockNode(
+            89,
+            [5, 6],
+            cpu_hash,
+            1,
+            0,
+            2,
+            cpu_hash,
+            0,
+            parent=manager.radix_tree_root,
+            cache_status=CacheStatus.CPU,
+        )
+        node.shared_count = 0
+        node.block_id = 11
+        manager.radix_tree_root.children[cpu_hash] = node
+        manager.cpu_lru_leaf_heap.append(node)
+        manager.cpu_lru_leaf_set.add(node)
+
+        captured_tasks = []
+        manager.issue_write_back_storage_task = lambda task, is_sync=True: captured_tasks.append(task)
+
+        freed = manager.free_cpu_block_ids(1)
+
+        self.assertEqual(freed, 1)
+        # No flush should be issued for non-attention_store backends
+        self.assertEqual(len(captured_tasks), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

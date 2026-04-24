@@ -824,7 +824,7 @@ class PrefixCacheManager:
                 storage_match_token_num = 0
                 match_storage_block_ids = []
 
-                if self.kvcache_storage_backend and no_match_token_num >= block_size:
+                if self.kvcache_storage_backend and no_match_token_num >= block_size and not envs.FD_AS_ONLY_FLUSH:
                     if not self.can_allocate_gpu_blocks(num_blocks=no_match_block_num, try_free_gpu_blocks=False):
                         raise Exception(
                             "request_match_blocks: Not enough GPU memory to allocate cache for matched Storage Cache"
@@ -1234,14 +1234,15 @@ class PrefixCacheManager:
         if self.kvcache_storage_backend is None:
             return
 
-        if len(task.keys) != len(task.gpu_block_ids):
+        if not envs.FD_AS_ONLY_FLUSH and len(task.keys) != len(task.gpu_block_ids):
             err_msg = (
                 f"write_back_storage error: hash_keys({len(task.keys)}) != gpu_block_ids({len(task.gpu_block_ids)})"
             )
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        self.task_write_back_event[task.task_id] = Event()
+        if is_sync:
+            self.task_write_back_event[task.task_id] = Event()
         self.cache_task_queue.put_transfer_task((CacheStatus.GPU2STORAGE, task))
         if is_sync:
             self.wait_write_storage_task(task.task_id)
@@ -1530,6 +1531,7 @@ class PrefixCacheManager:
         - freed_block_num: Number of CPU blocks successfully evicted
         """
         hash_value_block_ids_map = defaultdict(list)
+        hash_value_flush_info = {}  # {input_hash_value: (token_ids, min_depth)}
         total_cpu_free_count = 0
         with self.request_release_lock:
             while True:
@@ -1545,6 +1547,10 @@ class PrefixCacheManager:
 
                     self.recycle_cpu_blocks(node.block_id)
                     hash_value_block_ids_map[node.input_hash_value].extend(reversed(tmp_block_ids))
+                    if envs.FD_AS_ONLY_FLUSH and self.kvcache_storage_backend == "attention_store":
+                        key = node.input_hash_value
+                        if key not in hash_value_flush_info or node.depth < hash_value_flush_info[key][1]:
+                            hash_value_flush_info[key] = (node.input_ids, node.depth)
                     logger.info(f"free_cpu_block_ids: free node {node}")
 
                     self.node_id_pool.append(node.node_id)
@@ -1569,6 +1575,17 @@ class PrefixCacheManager:
         logger.info(
             "free_cpu_block_ids: after free, " + f"len(self.cpu_free_block_list) {len(self.cpu_free_block_list)}"
         )
+        if envs.FD_AS_ONLY_FLUSH and self.kvcache_storage_backend == "attention_store" and hash_value_flush_info:
+            for input_hash_value, (token_ids, min_depth) in hash_value_flush_info.items():
+                flush_task = WriteStorageTask(
+                    task_id=str(uuid.uuid4()),
+                    keys=[input_hash_value],
+                    token_ids=token_ids,
+                    gpu_block_ids=[],
+                    flush_cache_exists=False,
+                    start_write_block_idx=min_depth - 1,
+                )
+                self.issue_write_back_storage_task(flush_task, is_sync=False)
         return total_cpu_free_count
 
     def get_block_hash_extra_keys(self, request, start_idx, end_idx, mm_idx):
